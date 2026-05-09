@@ -154,6 +154,12 @@ backend/app/
   rejected with 400 / 413 *before* ffmpeg runs.
 - **One face per frame** — when MediaPipe returns multiple detections we keep
   the highest-confidence one.
+- **Face too close to camera** — the detector tries the short-range MediaPipe
+  model first (tuned for selfies, < 2 m) and falls back to the full-range model
+  (< 5 m), so close-up footage isn't silently missed. If the returned bbox
+  extends past the frame edges (common when the face fills most of the view),
+  the box is *trimmed* to the visible region rather than discarded — the user
+  still sees a rectangle around whatever part of the face is on-screen.
 - **Synchronous processing** — fine for short clips (a few seconds at 24–30
   fps). For longer videos a real deployment would offload to a worker; that's
   out of scope here.
@@ -181,6 +187,9 @@ Coverage:
   download returns the MP4, unknown id 404s.
 - `test_roi.py` — `/roi/{id}` returns rows in frame order with the documented
   shape, unknown id 404s.
+- `test_face_detector.py` — bbox clamping for normal faces, faces overflowing
+  the right/bottom edges, faces overflowing the top/left edges (the
+  "too close to camera" case), fully off-screen, and zero-sized bboxes.
 
 ---
 
