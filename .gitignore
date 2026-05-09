@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Vite
+node_modules/
+dist/
+.vite/
+
+# Local data (videos, frames, sqlite)
+data/
+*.db
+*.sqlite
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,20 @@
+services:
+  backend:
+    build: ./backend
+    container_name: face-roi-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist uploads, processed videos, and the SQLite DB across runs.
+      - app_data:/data
+
+  frontend:
+    build: ./frontend
+    container_name: face-roi-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  app_data:
