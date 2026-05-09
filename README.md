@@ -105,6 +105,8 @@ to *handle* the case, not reject the upload).
 
 ## Architecture
 
+![Face ROI Video API architecture](backend/docs/architecture.svg)
+
 ```
 ┌──────────────┐  POST /upload (mp4)   ┌────────────────────────────────────────┐
 │  React UI    │──────────────────────▶│  FastAPI  routes/videos.py             │

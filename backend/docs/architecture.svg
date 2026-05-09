@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="360" viewBox="0 0 920 360" role="img" aria-labelledby="title desc">
+  <title id="title">Face ROI Video API architecture</title>
+  <desc id="desc">Frontend uploads MP4 files to the FastAPI backend, which processes frames with ffmpeg, MediaPipe, and Pillow, then stores metadata in SQLite and processed videos on disk.</desc>
+  <style>
+    .bg { fill: #f8fafc; }
+    .card { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; rx: 8; }
+    .accent { fill: #e0f2fe; stroke: #0284c7; }
+    .storage { fill: #ecfdf5; stroke: #059669; }
+    .text { fill: #0f172a; font: 600 18px Arial, sans-serif; }
+    .small { fill: #334155; font: 14px Arial, sans-serif; }
+    .line { stroke: #475569; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#475569" />
+    </marker>
+  </defs>
+  <rect class="bg" width="920" height="360" />
+
+  <rect class="card accent" x="40" y="80" width="180" height="120" rx="8" />
+  <text class="text" x="130" y="128" text-anchor="middle">React UI</text>
+  <text class="small" x="130" y="158" text-anchor="middle">Vite + nginx</text>
+
+  <rect class="card accent" x="310" y="80" width="210" height="120" rx="8" />
+  <text class="text" x="415" y="122" text-anchor="middle">FastAPI</text>
+  <text class="small" x="415" y="150" text-anchor="middle">upload, video, ROI</text>
+  <text class="small" x="415" y="174" text-anchor="middle">validation + routing</text>
+
+  <rect class="card" x="610" y="70" width="250" height="140" rx="8" />
+  <text class="text" x="735" y="112" text-anchor="middle">Processing</text>
+  <text class="small" x="735" y="140" text-anchor="middle">ffmpeg frames</text>
+  <text class="small" x="735" y="164" text-anchor="middle">MediaPipe detection</text>
+  <text class="small" x="735" y="188" text-anchor="middle">Pillow ROI drawing</text>
+
+  <rect class="card storage" x="320" y="255" width="190" height="70" rx="8" />
+  <text class="text" x="415" y="286" text-anchor="middle">SQLite</text>
+  <text class="small" x="415" y="310" text-anchor="middle">video + ROI metadata</text>
+
+  <rect class="card storage" x="610" y="255" width="250" height="70" rx="8" />
+  <text class="text" x="735" y="286" text-anchor="middle">Disk</text>
+  <text class="small" x="735" y="310" text-anchor="middle">uploads + processed MP4</text>
+
+  <path class="line" d="M220 140 H305" />
+  <path class="line" d="M520 140 H605" />
+  <path class="line" d="M690 210 C650 235, 565 270, 515 288" />
+  <path class="line" d="M735 210 V250" />
+  <path class="line" d="M310 165 C260 215, 225 220, 190 190" />
+
+  <text class="small" x="265" y="130" text-anchor="middle">POST /upload</text>
+  <text class="small" x="565" y="130" text-anchor="middle">process</text>
+  <text class="small" x="245" y="230" text-anchor="middle">GET /video, /roi</text>
+</svg>
