@@ -106,45 +106,77 @@ to *handle* the case, not reject the upload).
 ## Architecture
 
 ```
-┌──────────────┐  upload   ┌──────────────────────────────────┐
-│  React UI    │──────────▶│  FastAPI  /upload                │
-│  (Vite+nginx)│           │   ├─ validate (ext/mime/size)    │
-│              │◀──────────│   ├─ save to /data/uploads       │
-└──────┬───────┘  video_id │   └─ video_processor.process()   │
-       │                   │         │                        │
-       │  GET /video/{id}  │         ▼                        │
-       │  GET /roi/{id}    │   ffmpeg extract ─► frames/      │
-       ▼                   │   MediaPipe face detect          │
-   <video> tag             │   Pillow draw rectangle          │
-                           │   ffmpeg reconstruct ─► out.mp4  │
-                           │   SQLAlchemy bulk insert ROIs    │
-                           └────────────┬─────────────────────┘
-                                        ▼
-                                   SQLite (/data/app.db)
-                                   processed mp4 (/data/processed)
+┌──────────────┐  POST /upload (mp4)   ┌────────────────────────────────────────┐
+│  React UI    │──────────────────────▶│  FastAPI  routes/videos.py             │
+│  (Vite+nginx)│                       │   ├─ validate ext / mime               │
+│              │◀──────────────────────│   ├─ stream-save with size cap (413)   │
+└──────┬───────┘  UploadResponse JSON  │   └─ video_processor.process_video()   │
+       │                               └─────────────────┬──────────────────────┘
+       │  GET /video/{id}                                │
+       │  GET /roi/{id}                                  ▼
+       ▼                               ┌────────────────────────────────────────┐
+   <video> tag                         │  Processing pipeline (synchronous)     │
+   <ul> meta panel                     │  1. ffprobe → fps                      │
+                                       │  2. ffmpeg → frames/frame_%06d.png     │
+                                       │  3. for each frame:                    │
+                                       │       PIL.open → numpy RGB             │
+                                       │       FaceDetector.detect:             │
+                                       │         ├─ MediaPipe short-range (0)   │
+                                       │         └─ fallback: full-range (1)    │
+                                       │       _clamp_bbox(...)                 │
+                                       │         (trims overflow when face is   │
+                                       │          too close to camera)          │
+                                       │       ImageDraw.rectangle (lime, 3px)  │
+                                       │       img.save (overwrite)             │
+                                       │  4. ffmpeg → out.mp4                   │
+                                       │       (-c:v libx264 -pix_fmt yuv420p   │
+                                       │        -movflags +faststart)           │
+                                       │  5. INSERT Video + bulk ROI in one txn │
+                                       │  6. finally: rmtree frames/{video_id}  │
+                                       └─────────────────┬──────────────────────┘
+                                                         ▼
+                                       SQLite      /data/app.db    (metadata)
+                                       Disk        /data/processed (mp4 output)
+                                       Disk        /data/uploads   (raw input)
 ```
 
-**Pipeline (synchronous, runs inline on the request thread):**
+**Pipeline notes:**
 
-1. `ffprobe` reads the source frame rate.
-2. `ffmpeg -i input.mp4 frames/frame_%06d.png` extracts every frame.
-3. For each frame: PIL → numpy → MediaPipe → bbox → `ImageDraw.rectangle` → save.
-4. `ffmpeg -framerate FPS -i frames/%06d.png -c:v libx264 -pix_fmt yuv420p -movflags +faststart out.mp4` re-encodes.
-5. `Video` row + bulk `ROI` rows committed in one transaction. Any exception rolls the row back and removes the partial file.
-6. Frames scratch directory is wiped in `finally`.
+1. **Probe** — `ffprobe -select_streams v:0 -show_entries stream=r_frame_rate`. Output is parsed as a rational; falls back to 30 fps on parse error.
+2. **Extract** — `ffmpeg -i input.mp4 -start_number 0 frames/frame_%06d.png`. Six-digit zero-padding so lexical sort matches frame order.
+3. **Detect → clamp → draw** — short-range model first because it's the one that recognizes faces filling most of the frame (close-to-camera). If both detectors miss, the frame is left untouched and no ROI row is inserted. If a bbox is returned but extends past the frame edges, `_clamp_bbox` trims it to the visible region rather than discarding it.
+4. **Re-encode** — `-pix_fmt yuv420p` for browser compatibility; `-movflags +faststart` so playback starts before the file is fully buffered.
+5. **Persist** — single transaction: `Video` row first (so the FK is valid), then `bulk_save_objects([ROI ...])`. Any exception inside the pipeline rolls the row back and removes a half-written `out.mp4` from disk.
+6. **Cleanup** — `shutil.rmtree(frames_dir, ignore_errors=True)` in `finally` so the scratch dir never leaks, even on ffmpeg failure.
 
 **Separation of concerns:**
 
 ```
 backend/app/
-├── routes/        HTTP layer (FastAPI handlers, Pydantic models)
-├── services/      Business logic (ffmpeg, face detection, pipeline)
-├── models/        SQLAlchemy ORM
-├── database/      Engine + session dependency
+├── routes/        HTTP layer — FastAPI handlers + Pydantic models, no
+│                  business logic beyond input validation and 4xx mapping.
+├── services/      Business logic
+│   ├── ffmpeg_utils.py      probe_fps, extract_frames, reconstruct_video
+│   ├── face_detector.py     MediaPipe wrapper + _clamp_bbox helper
+│   └── video_processor.py   end-to-end orchestrator (transactional)
+├── models/        SQLAlchemy ORM (Video, ROI)
+├── database/      Engine + SessionLocal + get_db dependency
 ├── utils/         Small pure helpers (filename sanitization)
 ├── config.py      Env-driven paths and limits
-└── main.py        FastAPI app wiring
+└── main.py        FastAPI app wiring (lifespan, CORS, router)
 ```
+
+**Frontend / nginx:**
+
+```
+browser ──/api/*─▶ nginx (port 80, frontend container)
+                     │   client_max_body_size 110M
+                     │   strip /api prefix on proxy_pass
+                     ▼
+               backend (port 8000, FastAPI)
+```
+
+In dev (`npm run dev`), Vite's dev server replaces nginx and proxies the same `/api/*` prefix to `localhost:8000`, so URLs are identical in dev and prod.
 
 ---
 
