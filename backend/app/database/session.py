@@ -1,9 +1,13 @@
 """SQLAlchemy engine, session factory, and FastAPI dependency."""
 
+import logging
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.config import DB_URL
+
+logger = logging.getLogger(__name__)
 
 # `check_same_thread=False` is the standard SQLite escape hatch when the
 # same connection may be touched by FastAPI's threadpool workers.
@@ -26,8 +30,7 @@ def get_db():
 
 def init_db() -> None:
     """Create tables. Called once on application startup."""
-    # Imported here so model classes are registered against Base.metadata
-    # before create_all runs.
     from app.models.video import Base
 
     Base.metadata.create_all(bind=engine)
+    logger.info("Database tables created/verified")

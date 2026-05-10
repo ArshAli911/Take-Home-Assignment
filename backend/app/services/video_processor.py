@@ -5,6 +5,7 @@ inline on the request thread is the simplest correct thing. For large
 videos we'd move this to a background worker.
 """
 
+import logging
 import shutil
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from app.models.video import ROI, Video
 from app.services import ffmpeg_utils
 from app.services.face_detector import FaceDetector
 
+logger = logging.getLogger(__name__)
+
 
 def _annotate_frames(frames_dir: Path, fps: float) -> tuple[list[dict], int]:
     """Run face detection on every frame and bake ROIs into the PNGs.
@@ -26,10 +29,10 @@ def _annotate_frames(frames_dir: Path, fps: float) -> tuple[list[dict], int]:
     detector = FaceDetector()
     rois: list[dict] = []
     frame_paths = sorted(frames_dir.glob("frame_*.png"))
+    logger.info("Annotating %d frames in %s", len(frame_paths), frames_dir)
     try:
         for frame_number, path in enumerate(frame_paths):
             with Image.open(path) as img:
-                # Image.open is lazy; force-load before mutating.
                 img.load()
                 bbox = detector.detect(img)
                 if bbox is not None:
@@ -47,10 +50,10 @@ def _annotate_frames(frames_dir: Path, fps: float) -> tuple[list[dict], int]:
                         "width": w,
                         "height": h,
                     })
-                # Save back to the same path so reconstruct picks it up.
                 img.save(path)
     finally:
         detector.close()
+    logger.info("Annotation complete: %d faces detected across %d frames", len(rois), len(frame_paths))
     return rois, len(frame_paths)
 
 
@@ -68,11 +71,18 @@ def process_video(
     """
     frames_dir = FRAMES_DIR / video_id
     out_path = PROCESSED_DIR / f"{video_id}.mp4"
+    logger.info("Processing pipeline started: video_id=%s", video_id)
     try:
         fps = ffmpeg_utils.probe_fps(src_path)
+        logger.info("Probed fps=%.2f for video_id=%s", fps, video_id)
+
         ffmpeg_utils.extract_frames(src_path, frames_dir)
+        logger.info("Frames extracted to %s for video_id=%s", frames_dir, video_id)
+
         rois, frame_count = _annotate_frames(frames_dir, fps)
+
         ffmpeg_utils.reconstruct_video(frames_dir, fps, out_path)
+        logger.info("Video reconstructed: video_id=%s, output=%s", video_id, out_path)
 
         video = Video(
             id=video_id,
@@ -82,10 +92,14 @@ def process_video(
             fps=fps,
         )
         db.add(video)
-        db.flush()  # ensure video.id is available for FK
+        db.flush()
         if rois:
             db.bulk_save_objects([ROI(video_id=video_id, **r) for r in rois])
         db.commit()
+        logger.info(
+            "Pipeline complete: video_id=%s, frames=%d, rois=%d",
+            video_id, frame_count, len(rois),
+        )
 
         return {
             "video_id": video_id,
@@ -94,8 +108,8 @@ def process_video(
             "roi_count": len(rois),
         }
     except Exception:
+        logger.exception("Pipeline failed for video_id=%s, rolling back", video_id)
         db.rollback()
-        # Don't leave a half-written processed file on disk.
         if out_path.exists():
             out_path.unlink(missing_ok=True)
         raise

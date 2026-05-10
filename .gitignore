@@ -18,6 +18,10 @@ data/
 *.db
 *.sqlite
 
+# Logs
+*.log
+logs/
+
 # Editor / OS
 .idea/
 .vscode/

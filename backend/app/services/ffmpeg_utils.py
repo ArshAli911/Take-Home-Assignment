@@ -5,8 +5,11 @@ constraint of "no OpenCV" is easy to honor and the dependency surface
 stays small. ffmpeg is provided by the Docker image.
 """
 
+import logging
 import subprocess
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class FFmpegError(RuntimeError):
@@ -15,9 +18,10 @@ class FFmpegError(RuntimeError):
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess:
     """Run a command and raise FFmpegError with stderr on failure."""
+    logger.debug("Running command: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        # Truncate stderr so a single failure can't blow up the response.
+        logger.error("Command failed (rc=%d): %s\nstderr: %s", result.returncode, " ".join(cmd), result.stderr.strip()[:500])
         raise FFmpegError(result.stderr.strip()[:500] or "ffmpeg failed")
     return result
 
@@ -43,6 +47,7 @@ def probe_fps(video_path: Path) -> float:
         fps = float(num) / float(den)
         return fps if fps > 0 else 30.0
     except (ValueError, ZeroDivisionError):
+        logger.warning("Could not parse fps from '%s', falling back to 30.0", raw)
         return 30.0
 
 

@@ -1,5 +1,6 @@
 """HTTP endpoints for upload, playback, and ROI metadata."""
 
+import logging
 import uuid
 from pathlib import Path
 
@@ -20,6 +21,8 @@ from app.models.video import ROI, Video
 from app.services.ffmpeg_utils import FFmpegError
 from app.services.video_processor import process_video
 from app.utils.filenames import sanitize_filename
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -110,19 +113,22 @@ async def upload_video(
 
     video_id = uuid.uuid4().hex
     src_path = UPLOAD_DIR / f"{video_id}.mp4"
+    logger.info("Upload started: video_id=%s, filename=%s", video_id, file.filename)
     await _save_upload_streamed(file, src_path)
+    logger.info("Upload saved to disk: video_id=%s, path=%s", video_id, src_path)
 
     original = sanitize_filename(file.filename)
     try:
         result = process_video(video_id, src_path, original, db)
     except FFmpegError as exc:
-        # Don't leak ffmpeg's full stderr to clients; log-friendly only.
+        logger.error("FFmpeg error for video_id=%s: %s", video_id, exc)
         src_path.unlink(missing_ok=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Video processing failed: {exc}",
         )
     except Exception:
+        logger.exception("Unexpected error processing video_id=%s", video_id)
         src_path.unlink(missing_ok=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -130,6 +136,10 @@ async def upload_video(
         )
 
     warning = "no faces detected" if result["roi_count"] == 0 else None
+    logger.info(
+        "Upload complete: video_id=%s, frames=%d, fps=%.2f, rois=%d",
+        video_id, result["frame_count"], result["fps"], result["roi_count"],
+    )
     return UploadResponse(
         video_id=result["video_id"],
         original_filename=original,
@@ -145,13 +155,15 @@ def get_video(video_id: str, db: Session = Depends(get_db)) -> FileResponse:
     """Stream the processed MP4."""
     video = db.query(Video).filter(Video.id == video_id).first()
     if video is None or not video.processed_filename:
+        logger.warning("Video not found: video_id=%s", video_id)
         raise HTTPException(status_code=404, detail="Video not found")
 
     path = PROCESSED_DIR / video.processed_filename
     if not path.is_file():
-        # DB row exists but the file went missing — treat as not found.
+        logger.error("Processed file missing on disk: video_id=%s, path=%s", video_id, path)
         raise HTTPException(status_code=404, detail="Processed file missing")
 
+    logger.info("Serving video: video_id=%s", video_id)
     return FileResponse(
         path=str(path),
         media_type="video/mp4",
@@ -164,6 +176,7 @@ def get_roi(video_id: str, db: Session = Depends(get_db)) -> ROIResponse:
     """Return per-frame ROI metadata for a processed video."""
     video = db.query(Video).filter(Video.id == video_id).first()
     if video is None:
+        logger.warning("ROI requested for unknown video: video_id=%s", video_id)
         raise HTTPException(status_code=404, detail="Video not found")
 
     rois = (
