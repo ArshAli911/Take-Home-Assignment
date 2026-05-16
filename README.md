@@ -182,6 +182,104 @@ In dev (`npm run dev`), Vite's dev server replaces nginx and proxies the same `/
 
 ---
 
+## Code design
+
+The codebase is small on purpose. The design choices below are the ones that
+materially shape how the code behaves under load, on failure, and during
+change — not stylistic preferences.
+
+### Layered, one-way dependencies
+
+```
+routes/  ─▶  services/  ─▶  models/  +  database/
+              │
+              └─▶  utils/   (pure helpers, no I/O)
+```
+
+Routes know about HTTP (status codes, multipart, Pydantic schemas) and nothing
+about ffmpeg or MediaPipe. Services know about the pipeline and the ORM but
+never about `Request`/`Response`. This is what keeps `video_processor.process_video`
+testable without a TestClient and what lets the route layer stay a thin
+adapter — input validation, error mapping, and delegation. Each layer imports
+only from layers below it; there are no cycles.
+
+### FastAPI dependency injection for sessions
+
+`get_db` is the single seam through which a request acquires a SQLAlchemy
+session. Doing it as a FastAPI dependency (rather than constructing a session
+inside the route) gives three things for free: (1) per-request lifecycle —
+one session opened, one closed, no leaks; (2) trivial test override via
+`app.dependency_overrides[get_db]`; (3) a natural place to add rollback-on-
+exception without touching any handler. Services receive the session as a
+parameter, never reach for a global.
+
+### Synchronous pipeline, transactional boundary
+
+`process_video` runs inline on the request thread. The assignment is bounded
+(≤100 MB, short clips), so the simplest correct thing is also the right thing —
+no Celery, no Redis, no task table to keep consistent with disk. The trade-off
+is explicit in code: the function takes a `db: Session`, does the full
+extract → detect → annotate → reconstruct → persist sequence, and either
+commits one atomic transaction or rolls it back *and* removes the half-written
+`out.mp4`. There is no state where the DB and the filesystem disagree about
+whether a video exists. When this needs to scale, the seam to move it behind a
+worker is exactly one function call in `routes/videos.py`.
+
+### Resource lifecycle is enforced, not hoped for
+
+Every owned resource is released by a `with`/`try-finally` rather than relying
+on GC:
+
+- `Image.open(...) as img` — PIL file handles closed promptly even on the
+  thousands of frames a video produces.
+- `FaceDetector.close()` in `_annotate_frames`'s `finally` — MediaPipe holds
+  native graph resources that don't get cleaned up by `__del__` reliably.
+- `shutil.rmtree(frames_dir, ignore_errors=True)` in `finally` — the scratch
+  directory never leaks, even when ffmpeg fails mid-reconstruct.
+
+This matters because the failure modes are real: a malformed frame, an OOM
+mid-pipeline, an ffmpeg timeout. The cleanup contract holds in all of them.
+
+### Errors fail loudly at the boundary, not silently in the middle
+
+Services raise typed exceptions (`FFmpegError`, SQLAlchemy errors, plain
+`ValueError` for sanitization). The route layer is the only place that maps
+exceptions to HTTP status codes — 400 for bad input, 413 for oversize, 415 for
+wrong MIME, 500 for downstream tool failure. Inside services, "no face
+detected on this frame" is an expected outcome (the row is just omitted),
+while "ffmpeg returned non-zero" is an exception. That split keeps the happy
+path readable and the error path explicit.
+
+### Configuration is environment-driven, with safe defaults
+
+`config.py` reads paths and limits from env vars (`DATA_DIR`, `MAX_UPLOAD_MB`)
+and falls back to sensible defaults for local dev. Nothing in the code hard-
+codes `/data/uploads` or `100 * 1024 * 1024` — the same image runs locally,
+in compose, and (with one env change) against a mounted volume in production.
+The Vite/nginx side mirrors the same idea: `/api/*` is the only path the
+frontend knows, and *where* it lands is a deploy-time concern.
+
+### Logging is structured around the unit of work
+
+Every pipeline log line carries `video_id=…` so a failed upload can be
+reconstructed from logs alone — probe → extract → annotate → reconstruct →
+persist, with counts at each step. The detector logs detection rate
+(`X faces across Y frames`), which is the metric most likely to drift
+silently when a model or threshold changes.
+
+### Tests stub the heavy edges, exercise the seams
+
+The tests don't need ffmpeg, MediaPipe, or a real video. They override
+`get_db` with an in-memory SQLite session, monkeypatch `process_video` to
+a deterministic stub, and POST real multipart bodies through `TestClient`.
+That's deliberate: the things worth testing fast are the contracts
+(validation, status codes, response shapes, ROI ordering, bbox clamping
+math), not the third-party tools. Integration with the real tools is
+verified by running the service end-to-end against a sample clip — once,
+manually — which is the right cost/value trade-off for a project this size.
+
+---
+
 ## Constraints & assumptions
 
 - **Input:** MP4 only, ≤ **100 MB**. Other formats / oversize uploads are
